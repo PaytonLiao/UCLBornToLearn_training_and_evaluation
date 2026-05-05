@@ -1,0 +1,42 @@
+# Python cache/build
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE/editor
+.idea/
+.vscode/
+
+# Test and coverage artifacts
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
+
+# ML artifacts
+outputs/
+runs/
+checkpoints/
+tensorboard/
+
+# Hugging Face and dataset caches
+.hf_cache/
+.cache/huggingface/
+
+# OS files
+.DS_Store
+Thumbs.db
+
