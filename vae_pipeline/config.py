@@ -7,13 +7,13 @@ from typing import Dict, List
 
 DEFAULT_STEP_BUDGETS = {
     "combined_recommended": 100_000,
-    "combined_all": 180_000,
+    "combined_all": 100_000,
     # "qdac_best_3of5_hits": 50_000,
-    "qdac_best_3of5_hits": 100,
-    "qdac_baseline_1.5M": 120_000,
-    "qdac_other_checkpoints": 120_000,
-    "moe": 120_000,
-    "random": 120_000,
+    "qdac_best_3of5_hits": 100_000,
+    "qdac_baseline_1.5M": 100_000,
+    "qdac_other_checkpoints": 100_000,
+    "moe": 100_000,
+    "random": 100_000,
 }
 
 

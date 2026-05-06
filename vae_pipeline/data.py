@@ -228,7 +228,6 @@ class FixedTimestepDataset(Dataset):
 
     def __getitem__(self, idx: int) -> torch.Tensor:
         ep_idx, t = self.sample_index[idx]
-        print(ep_idx, t)
         ep = self.episodes[ep_idx]
         x = _concat_modalities(self._get_file()[ep.key], t)
         x = (x - self.mean) / self.std
