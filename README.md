@@ -2,8 +2,8 @@
 
 ## 1) Training Plan
 
-1. Resolve one dataset subset (`combined_recommended`, `combined_all`, `qdac_best_3of5_hits`, etc.) from local snapshot or Hugging Face.
-2. Enumerate episodes from `dataset.h5` and create deterministic episode-level splits (`train/val/test`) using a seed to avoid timestep leakage.
+1. For each requested subset name, resolve **all** nested `dataset.h5` files under that subset directory (Hugging Face cache download per subset, or local snapshot). Optionally combine multiple subsets into one logical training corpus.
+2. Enumerate episodes across **all** HDF5 files (each episode is `(file_path, episode_key)`), then apply one deterministic global episode-level split (`train/val/test`) with a seed to avoid timestep leakage.
 3. Compute normalization statistics from training episodes only (streaming, strided sampling), then apply z-score normalization to all splits.
 4. Train a **vanilla VAE** on concatenated `proprioception + touch` vectors (dim `380 + 17175 = 17555`) with step-based optimization.
 5. Evaluate periodically on validation split; track and checkpoint:
@@ -43,7 +43,9 @@
 - **Episode-based split:** deterministic shuffling at episode level with fixed seed.
 - **Determinism:** seeds for Python, NumPy, and PyTorch; optional deterministic cuDNN.
 - **TensorBoard logs:** train/val/test total loss, reconstruction loss, KL, ELBO, LR, grad norm, step, epoch.
-- **Checkpoint metadata:** epoch, step, best metrics, subset name, and full config payload.
+- **Checkpoint metadata:** epoch, step, best metrics, dataset slug (`subset_name` field), optional `subset_names` list, and full config payload.
+- **Multiple HDF5 files:** LRU-bounded pool of open `h5py.File` handles (`h5_pool_max_open_files`) to stay scalable without exhausting OS file descriptors.
+- **Output directories:** `outputs/vae/<dataset_slug>/<experiment_name>/` where `dataset_slug` is a single subset name or `name__name__...` when combining subsets.
 
 ## 4) Recommended Hyperparameters
 
@@ -60,11 +62,7 @@ Baseline defaults (configured in code/CLI):
 - `normalization_stride`: `10`
 - `eval_samples_per_split`: `50_000`
 
-Step-budget defaults (override with `--max-steps`):
-
-- `combined_recommended`: `100_000` (target range 80k-120k)
-- `combined_all`: `180_000` (target range 150k-200k)
-- `qdac_best_3of5_hits`: `50_000` (target range 40k-60k)
+Step-budget defaults per subset name are listed in `vae_pipeline/config.py`. When you pass `--subsets a b c`, the training script defaults to `max(default_steps(a), default_steps(b), default_steps(c))`. Override globally with `--max-steps`.
 
 Relation to episodes:
 
@@ -80,27 +78,36 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
-````markdown
 ## Training
 
-Train on a subset (uses CUDA automatically if available):
+Train on one or more HF subset directories; every nested `dataset.h5` under those directories is merged (CUDA is used automatically when available).
 
 ### Bash / WSL (Linux / macOS)
 
 ```bash
 python -m scripts.train_vae \
   --hf-repo-id BornToLearnUCL/born_to_learn \
-  --subset combined_recommended \
+  --subsets combined_recommended moe random \
   --experiment-name vae_concat_baseline
 ```
-````
+
+Single subset (equivalent to one directory tree):
+
+```bash
+python -m scripts.train_vae \
+  --hf-repo-id BornToLearnUCL/born_to_learn \
+  --subsets combined_recommended \
+  --experiment-name vae_concat_baseline
+```
+
+Legacy flag (deprecated): `--subset combined_recommended` still maps to `subset_names=[combined_recommended]`.
 
 ### PowerShell (Windows)
 
 ```powershell
 python -m scripts.train_vae `
   --hf-repo-id BornToLearnUCL/born_to_learn `
-  --subset combined_recommended `
+  --subsets combined_recommended moe random `
   --experiment-name vae_concat_baseline
 ```
 
@@ -116,7 +123,7 @@ Use a local dataset snapshot instead of downloading:
 python -m scripts.train_vae \
   --hf-repo-id BornToLearnUCL/born_to_learn \
   --local-snapshot-root /path/to/local_snapshot \
-  --subset combined_all \
+  --subsets combined_all \
   --experiment-name vae_combined_all
 ```
 
@@ -126,7 +133,7 @@ python -m scripts.train_vae \
 python -m scripts.train_vae `
   --hf-repo-id BornToLearnUCL/born_to_learn `
   --local-snapshot-root C:\path\to\local_snapshot `
-  --subset combined_all `
+  --subsets combined_all `
   --experiment-name vae_combined_all
 ```
 
@@ -134,15 +141,15 @@ python -m scripts.train_vae `
 
 ## Evaluation
 
-Evaluate a checkpoint:
+Evaluate a checkpoint; **`--subsets` must match the training run** (same split + `norm_stats.json` beside the checkpoint).
 
 ### Bash / WSL
 
 ```bash
 python -m scripts.eval_vae \
   --hf-repo-id BornToLearnUCL/born_to_learn \
-  --subset combined_recommended \
-  --checkpoint outputs/vae/combined_recommended/vae_concat_baseline/checkpoints/best_val_elbo.pt
+  --subsets combined_recommended moe random \
+  --checkpoint outputs/vae/combined_recommended__moe__random/vae_concat_baseline/checkpoints/best_val_elbo.pt
 ```
 
 ### PowerShell
@@ -150,8 +157,8 @@ python -m scripts.eval_vae \
 ```powershell
 python -m scripts.eval_vae `
   --hf-repo-id BornToLearnUCL/born_to_learn `
-  --subset combined_recommended `
-  --checkpoint outputs/vae/combined_recommended/vae_concat_baseline/checkpoints/best_val_elbo.pt
+  --subsets combined_recommended moe random `
+  --checkpoint outputs/vae/combined_recommended__moe__random/vae_concat_baseline/checkpoints/best_val_elbo.pt
 ```
 
 ---

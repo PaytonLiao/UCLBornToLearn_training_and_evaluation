@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import json
-import math
 import random
 from dataclasses import asdict
 from pathlib import Path
-from typing import Dict, Iterable, Tuple
+from typing import Dict, Iterable, List
 
 import numpy as np
 import torch
@@ -14,13 +12,13 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from vae_pipeline.checkpointing import load_checkpoint, save_checkpoint, save_json
-from vae_pipeline.config import DataConfig, ModelConfig, TrainConfig, ensure_dir, serialize_config
+from vae_pipeline.config import DataConfig, ModelConfig, TrainConfig, dataset_slug, ensure_dir, serialize_config
 from vae_pipeline.data import (
     build_dataloaders,
+    collect_episodes_from_h5_files,
     compute_normalization_stats,
     deterministic_episode_split,
-    list_episodes,
-    resolve_subset_h5_path,
+    discover_all_h5_paths,
     save_norm_stats,
     save_split_manifest,
 )
@@ -45,7 +43,7 @@ def evaluate_split(
     model: VanillaVAE,
     data_loader: Iterable,
     device: torch.device,
-    max_steps: int | None = None,   # NEW ARG
+    max_steps: int | None = None,
 ) -> Dict[str, float]:
     model.eval()
     agg = {"total_loss": 0.0, "recon_loss": 0.0, "kl_div": 0.0, "elbo": 0.0}
@@ -68,7 +66,7 @@ def evaluate_split(
             total_batches += 1
 
     if total_batches == 0:
-        return {k: math.nan for k in agg}
+        return {k: float("nan") for k in agg}
 
     return {k: v / total_batches for k, v in agg.items()}
 
@@ -89,12 +87,13 @@ def train_vae(
     set_determinism(data_cfg.seed, train_cfg.deterministic)
     device = get_device()
 
-    output_root = ensure_dir(Path(train_cfg.output_dir) / data_cfg.subset_name / train_cfg.experiment_name)
+    slug = dataset_slug(data_cfg.subset_names)
+    output_root = ensure_dir(Path(train_cfg.output_dir) / slug / train_cfg.experiment_name)
     ckpt_dir = ensure_dir(output_root / "checkpoints")
     tb_dir = ensure_dir(output_root / "tensorboard")
 
-    h5_path = resolve_subset_h5_path(data_cfg)
-    episodes = list_episodes(h5_path)
+    h5_paths = discover_all_h5_paths(data_cfg)
+    episodes = collect_episodes_from_h5_files(h5_paths)
     split_eps = deterministic_episode_split(
         episodes,
         train_ratio=data_cfg.train_ratio,
@@ -103,10 +102,10 @@ def train_vae(
         seed=data_cfg.seed,
     )
     norm_stats = compute_normalization_stats(
-        h5_path=h5_path,
         episodes=split_eps["train"],
         stride=data_cfg.normalization_stride,
         max_episodes=data_cfg.normalization_max_episodes,
+        pool_max_open_files=data_cfg.h5_pool_max_open_files,
     )
 
     save_split_manifest(output_root / "episode_split.json", split_eps)
@@ -114,8 +113,10 @@ def train_vae(
     save_json(
         output_root / "data_summary.json",
         {
-            "h5_path": str(h5_path),
-            "subset_name": data_cfg.subset_name,
+            "subset_names": data_cfg.subset_names,
+            "dataset_slug": slug,
+            "h5_paths": [str(p) for p in h5_paths],
+            "h5_file_count": len(h5_paths),
             "episode_counts": {k: len(v) for k, v in split_eps.items()},
             "total_timesteps_per_split": {
                 k: int(sum(ep.length for ep in eps)) for k, eps in split_eps.items()
@@ -124,7 +125,6 @@ def train_vae(
     )
 
     loaders = build_dataloaders(
-        h5_path=h5_path,
         split_eps=split_eps,
         norm_stats=norm_stats,
         batch_size=train_cfg.batch_size,
@@ -132,6 +132,7 @@ def train_vae(
         eval_samples_per_split=data_cfg.eval_samples_per_split,
         seed=data_cfg.seed,
         pin_memory=train_cfg.pin_memory and device.type == "cuda",
+        pool_max_open_files=data_cfg.h5_pool_max_open_files,
     )
 
     model = VanillaVAE(
@@ -163,7 +164,7 @@ def train_vae(
     max_steps = train_cfg.max_steps
     est_epochs = max(1, int(max_steps / max(1, len(split_eps["train"]))))
 
-    progress = tqdm(total=max_steps, initial=global_step, desc=f"train:{data_cfg.subset_name}")
+    progress = tqdm(total=max_steps, initial=global_step, desc=f"train:{slug}")
     while global_step < max_steps:
         model.train()
         x = next(train_iter).to(device, non_blocking=True)
@@ -205,7 +206,8 @@ def train_vae(
                     epoch=epoch,
                     step=global_step,
                     best_metrics=best_metrics,
-                    subset_name=data_cfg.subset_name,
+                    subset_name=slug,
+                    subset_names=list(data_cfg.subset_names),
                     config=config_payload,
                 )
                 patience_counter = 0
@@ -221,7 +223,8 @@ def train_vae(
                     epoch=epoch,
                     step=global_step,
                     best_metrics=best_metrics,
-                    subset_name=data_cfg.subset_name,
+                    subset_name=slug,
+                    subset_names=list(data_cfg.subset_names),
                     config=config_payload,
                 )
 
@@ -236,7 +239,8 @@ def train_vae(
                 epoch=epoch,
                 step=global_step,
                 best_metrics=best_metrics,
-                subset_name=data_cfg.subset_name,
+                subset_name=slug,
+                subset_names=list(data_cfg.subset_names),
                 config=config_payload,
             )
 
@@ -249,18 +253,17 @@ def train_vae(
     if best_elbo_path.exists():
         state = load_checkpoint(best_elbo_path, map_location=device)
         model.load_state_dict(state["model_state_dict"])
-        
-    
-    test_max_steps = int(max_steps / data_cfg.train_ratio * data_cfg.test_ratio)
-    val_max_steps = int(max_steps / data_cfg.train_ratio * data_cfg.val_ratio)
-    final_val = evaluate_split(model, loaders["val"], device, test_max_steps)
-    final_test = evaluate_split(model, loaders["test"], device, val_max_steps)
+
+    final_val = evaluate_split(model, loaders["val"], device)
+    final_test = evaluate_split(model, loaders["test"], device)
     _log_metrics(writer, "val_final", final_val, global_step)
     _log_metrics(writer, "test", final_test, global_step)
 
     results = {
         "device": str(device),
-        "subset_name": data_cfg.subset_name,
+        "subset_names": data_cfg.subset_names,
+        "dataset_slug": slug,
+        "subset_name": slug,
         "global_step": global_step,
         "best_metrics": best_metrics,
         "final_val": final_val,
@@ -272,4 +275,3 @@ def train_vae(
     save_json(output_root / "results.json", results)
     writer.close()
     return results
-

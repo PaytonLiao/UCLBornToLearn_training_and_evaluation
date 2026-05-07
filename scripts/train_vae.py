@@ -3,14 +3,25 @@ from __future__ import annotations
 import argparse
 import json
 
-from vae_pipeline.config import DataConfig, ModelConfig, TrainConfig, get_default_steps_for_subset
+from vae_pipeline.config import DataConfig, ModelConfig, TrainConfig, get_default_steps_for_subsets
 from vae_pipeline.train import train_vae
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train vanilla VAE on robot dataset subsets.")
     p.add_argument("--hf-repo-id", required=True, type=str)
-    p.add_argument("--subset", type=str, default="combined_recommended")
+    p.add_argument(
+        "--subsets",
+        nargs="+",
+        default=None,
+        help="One or more dataset subset directory names (each fetched separately; all HDF5 files merged).",
+    )
+    p.add_argument(
+        "--subset",
+        type=str,
+        default=None,
+        help="Deprecated: single subset name. Use --subsets instead.",
+    )
     p.add_argument("--local-snapshot-root", type=str, default="")
     p.add_argument("--experiment-name", type=str, default="baseline")
     p.add_argument("--output-dir", type=str, default="outputs/vae")
@@ -25,17 +36,31 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--num-workers", type=int, default=0)
     p.add_argument("--resume-ckpt", type=str, default="")
+    p.add_argument(
+        "--h5-pool-max-open-files",
+        type=int,
+        default=64,
+        help="Max simultaneous HDF5 file handles per data-loading worker (LRU-closed when exceeded).",
+    )
     return p.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    max_steps = args.max_steps if args.max_steps > 0 else get_default_steps_for_subset(args.subset)
+    if args.subsets is not None:
+        subset_names = list(args.subsets)
+    elif args.subset is not None:
+        subset_names = [args.subset]
+    else:
+        subset_names = ["combined_recommended"]
+
+    max_steps = args.max_steps if args.max_steps > 0 else get_default_steps_for_subsets(subset_names)
     data_cfg = DataConfig(
         hf_repo_id=args.hf_repo_id,
-        subset_name=args.subset,
+        subset_names=subset_names,
         local_snapshot_root=args.local_snapshot_root,
         seed=args.seed,
+        h5_pool_max_open_files=args.h5_pool_max_open_files,
     )
     model_cfg = ModelConfig(latent_dim=args.latent_dim)
     train_cfg = TrainConfig(
@@ -56,4 +81,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

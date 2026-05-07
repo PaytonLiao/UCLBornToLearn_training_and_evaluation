@@ -9,13 +9,13 @@ from typing import Dict, List
 import torch
 
 from vae_pipeline.checkpointing import load_checkpoint
-from vae_pipeline.config import DataConfig, ModelConfig, TrainConfig
+from vae_pipeline.config import DataConfig, ModelConfig, TrainConfig, dataset_slug
 from vae_pipeline.data import (
     build_dataloaders,
+    collect_episodes_from_h5_files,
     deterministic_episode_split,
-    list_episodes,
+    discover_all_h5_paths,
     load_norm_stats,
-    resolve_subset_h5_path,
 )
 from vae_pipeline.model import VanillaVAE
 from vae_pipeline.train import evaluate_split, get_device
@@ -28,8 +28,8 @@ def evaluate_checkpoint(
     train_cfg: TrainConfig,
 ) -> Dict:
     device = get_device()
-    h5_path = resolve_subset_h5_path(data_cfg)
-    episodes = list_episodes(h5_path)
+    h5_paths = discover_all_h5_paths(data_cfg)
+    episodes = collect_episodes_from_h5_files(h5_paths)
     split_eps = deterministic_episode_split(
         episodes=episodes,
         train_ratio=data_cfg.train_ratio,
@@ -42,7 +42,6 @@ def evaluate_checkpoint(
     norm_stats_path = ckpt_path_obj.parents[1] / "norm_stats.json"
     norm_stats = load_norm_stats(norm_stats_path)
     loaders = build_dataloaders(
-        h5_path=h5_path,
         split_eps=split_eps,
         norm_stats=norm_stats,
         batch_size=train_cfg.batch_size,
@@ -50,6 +49,7 @@ def evaluate_checkpoint(
         eval_samples_per_split=data_cfg.eval_samples_per_split,
         seed=data_cfg.seed,
         pin_memory=train_cfg.pin_memory and device.type == "cuda",
+        pool_max_open_files=data_cfg.h5_pool_max_open_files,
     )
 
     model = VanillaVAE(
@@ -61,11 +61,13 @@ def evaluate_checkpoint(
     state = load_checkpoint(ckpt_path_obj, map_location=device)
     model.load_state_dict(state["model_state_dict"])
 
+    slug = dataset_slug(data_cfg.subset_names)
     val_metrics = evaluate_split(model, loaders["val"], device)
     test_metrics = evaluate_split(model, loaders["test"], device)
     return {
         "checkpoint_path": checkpoint_path,
-        "subset_name": data_cfg.subset_name,
+        "subset_names": data_cfg.subset_names,
+        "subset_name": slug,
         "device": str(device),
         "val": val_metrics,
         "test": test_metrics,
@@ -79,11 +81,15 @@ def export_results(result_rows: List[Dict], output_json: str = "", output_csv: s
     if output_json:
         Path(output_json).write_text(json.dumps(result_rows, indent=2), encoding="utf-8")
     if output_csv:
+        if not result_rows:
+            return
         rows: List[Dict] = []
         for r in result_rows:
+            slug = r.get("subset_name") or ""
             rows.append(
                 {
-                    "subset_name": r["subset_name"],
+                    "subset_name": slug,
+                    "subset_names": "|".join(r.get("subset_names") or []),
                     "checkpoint_path": r["checkpoint_path"],
                     "val_total_loss": r["val"]["total_loss"],
                     "val_recon_loss": r["val"]["recon_loss"],
@@ -99,4 +105,3 @@ def export_results(result_rows: List[Dict], output_json: str = "", output_csv: s
             writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
             writer.writeheader()
             writer.writerows(rows)
-

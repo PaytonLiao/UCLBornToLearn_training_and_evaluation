@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Dict, List
 
-from vae_pipeline.config import DataConfig, ModelConfig, TrainConfig, get_default_steps_for_subset
+from vae_pipeline.config import DataConfig, ModelConfig, TrainConfig, dataset_slug, get_default_steps_for_subset
 from vae_pipeline.evaluate import export_results
 from vae_pipeline.train import train_vae
 
@@ -39,6 +39,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--summary-json", type=str, default="outputs/vae/core_subsets_summary.json")
     p.add_argument("--summary-csv", type=str, default="outputs/vae/core_subsets_summary.csv")
     p.add_argument("--full-results-json", type=str, default="outputs/vae/core_subsets_full_results.json")
+    p.add_argument("--h5-pool-max-open-files", type=int, default=64)
     return p.parse_args()
 
 
@@ -61,12 +62,14 @@ def main() -> None:
     for subset in CORE_SUBSETS:
         max_steps = max_step_overrides.get(subset, get_default_steps_for_subset(subset))
         experiment_name = f"{args.experiment_prefix}_{subset}"
+        subset_names = [subset]
 
         data_cfg = DataConfig(
             hf_repo_id=args.hf_repo_id,
-            subset_name=subset,
+            subset_names=subset_names,
             local_snapshot_root=args.local_snapshot_root,
             seed=args.seed,
+            h5_pool_max_open_files=args.h5_pool_max_open_files,
         )
         model_cfg = ModelConfig(latent_dim=args.latent_dim)
         train_cfg = TrainConfig(
@@ -85,16 +88,12 @@ def main() -> None:
         result = train_vae(data_cfg=data_cfg, model_cfg=model_cfg, train_cfg=train_cfg)
         rows.append(result)
 
-        best_ckpt = (
-            Path(args.output_dir)
-            / subset
-            / experiment_name
-            / "checkpoints"
-            / "best_val_elbo.pt"
-        )
+        slug = dataset_slug(subset_names)
+        best_ckpt = Path(args.output_dir) / slug / experiment_name / "checkpoints" / "best_val_elbo.pt"
         eval_export_rows.append(
             {
-                "subset_name": subset,
+                "subset_names": subset_names,
+                "subset_name": slug,
                 "checkpoint_path": str(best_ckpt),
                 "val": result["final_val"],
                 "test": result["final_test"],
@@ -109,4 +108,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

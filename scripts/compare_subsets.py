@@ -12,7 +12,12 @@ from vae_pipeline.evaluate import evaluate_checkpoint, export_results
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Compare trained VAE checkpoints across subsets.")
     p.add_argument("--hf-repo-id", required=True, type=str)
-    p.add_argument("--subsets", nargs="+", required=True)
+    p.add_argument(
+        "--subsets",
+        nargs="+",
+        required=True,
+        help="One subset name per checkpoint (each row is evaluated with subset_names=[name]).",
+    )
     p.add_argument("--checkpoints", nargs="+", required=True)
     p.add_argument("--local-snapshot-root", type=str, default="")
     p.add_argument("--latent-dim", type=int, default=64)
@@ -20,6 +25,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--output-json", type=str, default="outputs/vae/subset_comparison.json")
     p.add_argument("--output-csv", type=str, default="outputs/vae/subset_comparison.csv")
+    p.add_argument("--h5-pool-max-open-files", type=int, default=64)
     return p.parse_args()
 
 
@@ -32,9 +38,10 @@ def main() -> None:
     for subset, checkpoint in zip(args.subsets, args.checkpoints):
         data_cfg = DataConfig(
             hf_repo_id=args.hf_repo_id,
-            subset_name=subset,
+            subset_names=[subset],
             local_snapshot_root=args.local_snapshot_root,
             seed=args.seed,
+            h5_pool_max_open_files=args.h5_pool_max_open_files,
         )
         model_cfg = ModelConfig(latent_dim=args.latent_dim)
         train_cfg = TrainConfig(batch_size=args.batch_size)
@@ -54,4 +61,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

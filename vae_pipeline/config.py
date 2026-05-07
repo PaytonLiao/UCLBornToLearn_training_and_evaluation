@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import MISSING, asdict, dataclass, field, fields
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 
 
 DEFAULT_STEP_BUDGETS = {
     "combined_recommended": 100_000,
     "combined_all": 100_000,
-    # "qdac_best_3of5_hits": 50_000,
     "qdac_best_3of5_hits": 100_000,
     "qdac_baseline_1.5M": 100_000,
     "qdac_other_checkpoints": 100_000,
@@ -20,7 +19,7 @@ DEFAULT_STEP_BUDGETS = {
 @dataclass
 class DataConfig:
     hf_repo_id: str
-    subset_name: str = "combined_recommended"
+    subset_names: List[str] = field(default_factory=lambda: ["combined_recommended"])
     local_snapshot_root: str = ""
     cache_dir: str = ".hf_cache"
     train_ratio: float = 0.8
@@ -30,6 +29,7 @@ class DataConfig:
     normalization_stride: int = 10
     normalization_max_episodes: int = 400
     eval_samples_per_split: int = 50_000
+    h5_pool_max_open_files: int = 64
 
 
 @dataclass
@@ -58,8 +58,22 @@ class TrainConfig:
     deterministic: bool = True
 
 
+def dataset_slug(subset_names: List[str]) -> str:
+    """Filesystem-safe identifier for an experiment output directory."""
+    if len(subset_names) == 1:
+        return subset_names[0]
+    return "__".join(subset_names)
+
+
 def get_default_steps_for_subset(subset_name: str) -> int:
     return DEFAULT_STEP_BUDGETS.get(subset_name, 100_000)
+
+
+def get_default_steps_for_subsets(subset_names: List[str]) -> int:
+    """When combining subsets, use the maximum per-subset budget as a conservative default."""
+    if not subset_names:
+        return 100_000
+    return max(get_default_steps_for_subset(name) for name in subset_names)
 
 
 def ensure_dir(path: str | Path) -> Path:
@@ -79,3 +93,25 @@ def serialize_config(
         "train": asdict(train_config),
     }
 
+
+def data_config_from_dict(data: Dict[str, Any]) -> DataConfig:
+    """Build DataConfig from serialized dict; supports legacy checkpoints with only subset_name."""
+    payload = dict(data)
+    if "subset_names" not in payload and "subset_name" in payload:
+        payload["subset_names"] = [str(payload.pop("subset_name"))]
+    elif "subset_names" not in payload:
+        payload["subset_names"] = ["combined_recommended"]
+    payload.pop("subset_name", None)
+
+    kwargs: Dict[str, Any] = {}
+    for f in fields(DataConfig):
+        if f.name in payload:
+            kwargs[f.name] = payload[f.name]
+            continue
+        if f.default is not MISSING:
+            kwargs[f.name] = f.default
+        elif f.default_factory is not MISSING:
+            kwargs[f.name] = f.default_factory()  # type: ignore[misc]
+        else:
+            raise ValueError(f"Missing required DataConfig field {f.name!r} in checkpoint/config dict.")
+    return DataConfig(**kwargs)
