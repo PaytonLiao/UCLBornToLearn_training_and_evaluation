@@ -45,7 +45,7 @@ class TrainConfig:
     output_dir: str = "outputs/vae"
     experiment_name: str = "baseline"
     batch_size: int = 256
-    num_workers: int = 0
+    num_workers: int = 4
     learning_rate: float = 3e-4
     max_steps: int = 100_000
     eval_every_steps: int = 2_000

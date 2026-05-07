@@ -6,6 +6,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, List
 
+
+
 import torch
 
 from vae_pipeline.checkpointing import load_checkpoint
@@ -20,12 +22,58 @@ from vae_pipeline.data import (
 from vae_pipeline.model import VanillaVAE
 from vae_pipeline.train import evaluate_split, get_device
 
+from sklearn.decomposition import PCA
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+def compute_pca_latents(model, dataloader, device, max_samples):
+    model.eval()
+
+    latents = []
+
+    with torch.no_grad():
+        for step, batch in enumerate(dataloader):
+            if max_samples is not None and step >= max_samples:
+                break
+            # adapt depending on your dataset format
+            x = batch.to(device)
+
+            out = model(x)
+
+            mu = out["mu"]  # IMPORTANT: use mu, not z
+
+            latents.append(mu.cpu().numpy())
+
+    latents = np.concatenate(latents, axis=0)
+
+    pca = PCA(n_components=2)
+    z_2d = pca.fit_transform(latents)
+
+    return z_2d, pca.explained_variance_ratio_
+
+def plot_pca_latent(z_2d, var_ratio, save_path):
+
+    plt.figure(figsize=(6, 6))
+    plt.scatter(z_2d[:, 0], z_2d[:, 1], s=2)
+
+    plt.title(
+        "PCA of VAE latent (test split)\n"
+        f"Explained var: {var_ratio[0]:.3f}, {var_ratio[1]:.3f}"
+    )
+    plt.xlabel("PC1")
+    plt.ylabel("PC2")
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=200)
+    plt.close()
 
 def evaluate_checkpoint(
     checkpoint_path: str,
     data_cfg: DataConfig,
     model_cfg: ModelConfig,
     train_cfg: TrainConfig,
+    max_samples: int | None = None,
 ) -> Dict:
     device = get_device()
     h5_paths = discover_all_h5_paths(data_cfg)
@@ -58,12 +106,42 @@ def evaluate_checkpoint(
         encoder_hidden_dims=model_cfg.encoder_hidden_dims,
         decoder_hidden_dims=model_cfg.decoder_hidden_dims,
     ).to(device)
+    print("\n[INFO] Loading checkpoint...")
+    print(f"[INFO] ckpt path: {ckpt_path_obj}")
+
     state = load_checkpoint(ckpt_path_obj, map_location=device)
+    print("[INFO] Checkpoint loaded successfully")
+
+    print("[INFO] Loading model weights...")
     model.load_state_dict(state["model_state_dict"])
+    print("[INFO] Model state_dict loaded")
 
     slug = dataset_slug(data_cfg.subset_names)
-    val_metrics = evaluate_split(model, loaders["val"], device)
-    test_metrics = evaluate_split(model, loaders["test"], device)
+    print(f"[INFO] Dataset slug: {slug}")
+
+    print(f"[INFO] Computing PCA latents (max_samples={max_samples})...")
+    z_2d, var_ratio = compute_pca_latents(model, loaders["test"], device, max_samples)
+    print("[INFO] PCA computation complete")
+
+    ckpt_path = Path(checkpoint_path)
+    ckpt_dir = ckpt_path.parent              # .../checkpoints
+    ckpt_name = ckpt_path.stem               # best_val_elbo
+    out_dir = ckpt_dir / f"{ckpt_name}_pca_test_latent"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{max_samples}_samples.png"
+
+    print(f"[INFO] Saving PCA plot to: {out_path}")
+    plot_pca_latent(z_2d, var_ratio, out_path)
+    print("[INFO] PCA plot saved")
+
+    print(f"[INFO] Evaluating validation set (max_samples={max_samples})...")
+    val_metrics = evaluate_split(model, loaders["val"], device, max_samples)
+    print("[INFO] Validation evaluation complete")
+
+    print(f"[INFO] Evaluating test set (max_samples={max_samples})...")
+    test_metrics = evaluate_split(model, loaders["test"], device, max_samples)
+    print("[INFO] Test evaluation complete")
+    
     return {
         "checkpoint_path": checkpoint_path,
         "subset_names": data_cfg.subset_names,

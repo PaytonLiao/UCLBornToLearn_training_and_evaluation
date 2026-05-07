@@ -20,6 +20,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--checkpoint", required=True, type=str)
     p.add_argument("--local-snapshot-root", type=str, default="")
     p.add_argument("--latent-dim", type=int, default=64)
+    p.add_argument("--max-samples", type=int, default=None)
     p.add_argument("--batch-size", type=int, default=256)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--num-workers", type=int, default=0)
@@ -50,6 +51,7 @@ def main() -> None:
         data_cfg=data_cfg,
         model_cfg=model_cfg,
         train_cfg=train_cfg,
+        max_samples=args.max_samples,
     )
     print(json.dumps(result, indent=2))
 
