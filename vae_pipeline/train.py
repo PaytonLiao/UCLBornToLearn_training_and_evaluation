@@ -248,16 +248,31 @@ def train_vae(
             epoch += 1
 
     progress.close()
+    print("\n[INFO] Loading best checkpoint for final evaluation...")
 
     best_elbo_path = ckpt_dir / "best_val_elbo.pt"
     if best_elbo_path.exists():
+        print(f"[INFO] Found checkpoint: {best_elbo_path}")
         state = load_checkpoint(best_elbo_path, map_location=device)
         model.load_state_dict(state["model_state_dict"])
+        print("[INFO] Model weights loaded successfully")
+    else:
+        print("[WARN] No best checkpoint found, using last model state")
 
+    print("\n[INFO] Starting final validation evaluation...")
     final_val = evaluate_split(model, loaders["val"], device)
+    print("[INFO] Validation evaluation complete")
+
+    print("\n[INFO] Starting final test evaluation (this may take a while)...")
     final_test = evaluate_split(model, loaders["test"], device)
+    print("[INFO] Test evaluation complete")
+
+    print("\n[INFO] Logging metrics to TensorBoard...")
     _log_metrics(writer, "val_final", final_val, global_step)
     _log_metrics(writer, "test", final_test, global_step)
+    print("[INFO] Metrics logged")
+
+    print("\n[INFO] Saving results.json...")
 
     results = {
         "device": str(device),
